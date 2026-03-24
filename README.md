@@ -1,5 +1,7 @@
 # Advanced Terraform Module Usage: Versioning, Gotchas, and Reuse Across Environments
 
+![releases](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/tyvfgltz5f67ikxm0ups.png)
+
 If you followed my Day 8 breakdown, you know that moving from a monolithic `main.tf` to a reusable Terraform module is a massive architectural leap. But building a module is only half the battle. 
 
 If you don't understand how Terraform resolves paths, handles state logic, or pins versions, your beautiful module will quickly become a nightmare for other engineers to use. 
@@ -15,10 +17,13 @@ When you transition from writing root environments to writing child modules, Ter
 ### Gotcha 1: The File Path Trap
 Imagine you have a `user-data.sh` script sitting in your module folder. You might be tempted to reference it like this:
 
-```hcl
+```json
 # ❌ THE WRONG WAY
-resource "aws_launch_template" "app" {
+
+resource "aws_launch_template"  "app" {
+
   # ...
+
   user_data = filebase64("./user-data.sh") 
 }
 ```
@@ -30,7 +35,7 @@ resource "aws_launch_template" "app" {
 
 #### ✅ THE RIGHT WAY
 
-```hcl
+```json
 
 resource "aws_launch_template" "app" {
   
@@ -38,6 +43,12 @@ resource "aws_launch_template" "app" {
 }
 
 ```
+Other possible values are:
+| Name | Description |
+|---|:---|
+|`path.module`| The directory where the current module's code is located. (Use this 99% of the time inside modules to reference scripts or templates).|
+|`path.root` |The directory of the root environment (e.g., your dev/ or prod/ folder where you actually run terraform apply).|
+|`path.cwd` |The directory from which the user executed the Terraform command in their terminal. (Usually identical to path.root, unless the user runs Terraform from a different directory using the -chdir flag).|
 
 ### Gotcha 2: The Inline Block "Perpetual Diff"
 
@@ -45,7 +56,7 @@ Some AWS resources, like Security Groups, allow you to define rules inline or as
 
 #### ❌ THE WRONG WAY (Inline)
 
-```hcl
+```json
 resource "aws_security_group" "web" {
   ingress {
     from_port = 80
@@ -61,7 +72,7 @@ resource "aws_security_group" "web" {
 **The Fix:** Always use standalone resources inside modules to allow external extensibility.
 
 #### ✅ THE RIGHT WAY (Standalone)
-```hcl
+```json
 
 resource "aws_security_group" "web" {
   name = "web-sg"
@@ -82,7 +93,7 @@ resource "aws_security_group_rule" "http" {
 Sometimes, a developer calling your module will try to force an execution order using depends_on.
 
 #### ❌ THE WRONG WAY
-```hcl
+```json
 
 module "webserver" {
   source     = "../modules/webserver"
@@ -94,7 +105,7 @@ module "webserver" {
 **The Fix:** Let Terraform's native dependency graph do the work. Pass explicit resource outputs into the module as variables.
 
 #### ✅ THE RIGHT WAY
-```hcl
+```json
 
 
 module "webserver" {
@@ -109,7 +120,7 @@ In a production environment, you never point your infrastructure at a local fold
 
 To version a module, you simply use Git tags.
 
-```hcl
+```json
 # Tagging a stable release in your module repository
 git tag -a "v0.0.1" -m "Initial stable release"
 git push origin v0.0.1
@@ -118,7 +129,7 @@ Once tagged, how you format the `source` URL determines exactly what Terraform p
 
 ### 1. The Local Source (Good for initial drafting, bad for teams):
 
-```hcl
+```json
 module "webserver" {
   source = "../modules/webserver"
 }
@@ -126,15 +137,15 @@ module "webserver" {
 ### 2. The Git Repository Source (The Enterprise Standard):
 Notice the double slash `//.` This tells Terraform where the repository ends and the specific subfolder begins, while `?ref=` targets the exact Git tag.
 
-```hcl
+```bash
 module "webserver" {
-  source = "[github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1](https://github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1)"
+  source = github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1"
 }
 ```
 ### 3. The Terraform Public Registry Source:
 When pulling from HashiCorp's official registry, the syntax simplifies. The version gets its own explicit argument.
 
-```hcl
+```json
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.0.0"
@@ -149,14 +160,41 @@ I released `v0.0.1` of [my webserver module](https://github.com/Vivixell/Reusabl
 #### The Production Environment (Pinned to Stable)
 Production code should never use the master branch or the "latest" tag. It is strictly pinned to the battle-tested `v0.0.1` release.
 
-```hcl
+```bash
 # prod/main.tf
 module "webserver_cluster" {
-  source = "[github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1](https://github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1)"
+  source = github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.1"
 
   cluster_name  = "prod-app"
   instance_type = "t3.small"
   # ... standard inputs ( check the repo for the complete code)
 }
 ```
-[check the repo for the complete code]()
+[check the repo for the complete code](https://github.com/Vivixell/Terraform-Module-Usage-Advance-)
+
+#### The Development Environment (Testing Bleeding Edge)
+
+The Dev team is actively testing the new tagging feature. Their environment points to `v0.0.2`.
+
+```json
+# dev/main.tf
+module "webserver_cluster" {
+  source = "[github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.2](https://github.com/Vivixell/Reusable-Infrastructure//modules/webserver?ref=v0.0.2)"
+
+  cluster_name  = "dev-app"
+  instance_type = "t3.micro"
+  
+  # Testing the new feature introduced in v0.0.2!
+  custom_tags = {
+    Environment = "Development"
+    Owner       = "OVR"
+  }
+}
+```
+
+When you run `terraform init` in these separate folders, Terraform downloads the exact, isolated versions of the code. If `v0.0.2` has a catastrophic bug, Production remains completely safe.
+
+## Final Thoughts
+
+Understanding file paths, inline blocks, and versioning is what separates writing Terraform scripts from building actual Infrastructure as Code architecture.
+
